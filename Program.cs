@@ -1,4 +1,5 @@
 ﻿using HSCheckpoint;
+using HSCheckpoint.Events;
 using HSCheckpoint.GameFiles;
 using HSCheckpoint.GameObjects;
 using HSCheckpoint.Mem;

@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace HSCheckpoint.Mem
+namespace HSCheckpoint.Events
 {
     public class MemoryChangedEventArgs<T> : EventArgs
     {
