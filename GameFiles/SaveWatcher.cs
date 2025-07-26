@@ -37,7 +37,6 @@ namespace HSCheckpoint.GameFiles
             watcher.Deleted += OnDeleted;
             watcher.Error += OnError;
 
-            //watcher.Filter = PLAYER_EQUIPMENT_FILE;//"*.sav";
             watcher.Filters.Add(PLAYER_EQUIPMENT_FILE);
             watcher.Filters.Add(PLAYER_GAUNTLET_FILE);
             watcher.IncludeSubdirectories = false;

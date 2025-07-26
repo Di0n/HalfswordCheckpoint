@@ -9,9 +9,6 @@ using System.Threading.Tasks;
 
 namespace HSCheckpoint.Mem
 {
-    // https://www.reddit.com/r/csharp/comments/1jx9fgo/how_do_i_write_to_a_memory_address_of_another/
-    // https://www.codeproject.com/Articles/670373/Csharp-Read-Write-Another-Process-Memory
-    // https://github.com/Di0n/AmongUsMod/blob/main/AmongUsMod/mem.hpp
     public class ProcessMemory : IDisposable
     {
         // Memory api process
@@ -26,6 +23,18 @@ namespace HSCheckpoint.Mem
                 ProcessId = processId;
             }
          }
+
+        public enum MemoryResult : int
+        {
+            NO_ERROR = 0,
+            ERROR_ACCESS_DENIED = 5,
+            ERROR_INVALID_HANDLE = 6,
+            ERROR_NOT_ENOUGH_MEMORY = 8,
+            ERROR_INVALID_PARAMETER = 87,
+            ERROR_PARTIAL_COPY = 299,
+            ERROR_INVALID_ADDRESS = 487,
+            ERROR_NOACCESS = 998,
+        }
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
@@ -91,21 +100,42 @@ namespace HSCheckpoint.Mem
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <param name="address"></param>
-        /// <returns></returns>
         /// <exception cref="MemoryException"></exception>
+        /// <returns></returns>
         public unsafe T Read<T>(IntPtr address) where T : unmanaged
         {
+            MemoryResult res = TryRead(address, out T val);
+            if (res != MemoryResult.NO_ERROR)
+            {
+                throw new MemoryException($"Failed to read memory", (int)res);
+            }
+
+            return val;
+        }
+
+        /// <summary>
+        /// Tries to read a built-in value from a memory address
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="address"></param>
+        /// <param name="val"></param>
+        /// <returns>MemoryResult</returns>
+        public unsafe MemoryResult TryRead<T>(IntPtr address, out T val) where T : unmanaged
+        {
+            val = default(T);
             int size = sizeof(T);
             byte* buffer = stackalloc byte[size];
 
             if (!ReadProcessMemory(process.Handle, address, buffer, size, out int bytesRead) || bytesRead != size)
             {
                 int errorCode = Marshal.GetLastWin32Error();
-                throw new MemoryException($"Failed to read memory", errorCode);
+                return (MemoryResult)errorCode;
             }
 
-            return *(T*)buffer;
+            val = *(T*)buffer;
+            return MemoryResult.NO_ERROR;
         }
+
 
         /// <summary>
         /// Write a built-in value to a set memory address
@@ -180,10 +210,11 @@ namespace HSCheckpoint.Mem
 
             for (int i = 0; i < offsets.Length; i++)
             {
-                address = Read<IntPtr>(address); // Lees pointer op huidig adres
-                //if (address == IntPtr.Zero)
-                //    throw new MemoryException($"Null pointer encountered in chain at offset index {i}");
-                address = IntPtr.Add(address, offsets[i]); // Voeg offset toe
+                TryRead(address, out address); // Read pointer current address
+                if (address == IntPtr.Zero)
+                    return IntPtr.Zero;
+
+                address = IntPtr.Add(address, offsets[i]); // add offset
             }
 
             return address;

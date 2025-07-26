@@ -11,12 +11,14 @@ namespace HSCheckpoint.Events
         public string Name { get; }
         public T OldValue { get; }
         public T NewValue { get; }
+        public bool ValueModified { get; set; }
 
         public MemoryChangedEventArgs(string name, T oldVal, T newVal)
         {
             Name = name;
             OldValue = oldVal;
             NewValue = newVal;
+            ValueModified = false;
         }
     }
 }

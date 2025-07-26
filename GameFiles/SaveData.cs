@@ -56,7 +56,7 @@ namespace HSCheckpoint.GameFiles
         /// <param name="maxAttempts"></param>
         /// <returns></returns>
         /// <exception cref="IOException"></exception>
-        public bool LoadSaveProgress(int maxAttempts)
+        public bool LoadSaveProgress(int maxAttempts = 1)
         {
             // Voeg een .lock bestand toe
             if (!Directory.Exists(backupFilePath))

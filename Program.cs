@@ -3,17 +3,15 @@ using HSCheckpoint.Events;
 using HSCheckpoint.GameFiles;
 using HSCheckpoint.GameObjects;
 using HSCheckpoint.Mem;
+using HSCheckpoint.Offsets;
 using System.Diagnostics;
 using System.Reflection;
-using static System.Net.Mime.MediaTypeNames;
 
-// Check of de speler in freemode zit, dan mag er niks gedaan worden
-// Wanneer de speler de eindbaas verslaat dan wordt het nu niet gesaved.
-// Dit kan opgelost worden door te kijken of het hoofdmenu geopend is, als die van 0 naar 1 is gegaan en de speler komt niet vanuit de abyss dan heeft hij m ook behaald
 class Program
 {
     private const string PROCESS_NAME           = "HalfSwordUE5-Win64-Shipping";
     private const string MODULE_NAME            = "HalfSwordUE5-Win64-Shipping.exe";
+    private const string GAME_VERSION           = "5.4.4.0";
 
     private static Process? GetGameProces(string procName)
     {
@@ -33,34 +31,47 @@ class Program
             return;
         }
 
+        string? fileName = proc?.MainModule?.FileName ?? string.Empty;
+        if (!string.IsNullOrEmpty(fileName))
+        {
+            var fileInfo = FileVersionInfo.GetVersionInfo(fileName);
+
+            string fileVersion = $"{fileInfo.FileMajorPart}.{fileInfo.FileMinorPart}.{fileInfo.FileBuildPart}.{fileInfo.FilePrivatePart}";
+
+            if (fileVersion != GAME_VERSION)
+                Console.WriteLine("WARNING: This mod is created for game version {0}, current game version is: {1}", GAME_VERSION, fileVersion);
+        }
+
         Console.WriteLine("{0} v{1} Started at {2}",
             AppDomain.CurrentDomain.FriendlyName,
             Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
             DateTime.Now.ToString());
 
-        new Program(proc).Run();
+        new Program(proc!).Run();
         
         Console.WriteLine("Shutting down...");
     }
 
-    private readonly string saveFilePath = Path.Combine(Environment.GetEnvironmentVariable("LocalAppData")!, "HalfSwordUE5\\Saved\\SaveGames\\");
+
     private readonly Process proc;
-    private readonly SaveWatcher watcher;
     private readonly ProcessMemory procMem;
     private readonly Player player;
+    private readonly GameState gameState;
 
     private List<IUpdatable> updatables = new();
     private IntPtr moduleBase;
-    private int prevRank = -1;
+
+    private int rank = 0;
+    private int points = 0;
 
     public Program(Process proc)
     {
         this.proc = proc;
         
         // Monitor save files for changes
-        watcher = new SaveWatcher(saveFilePath);
-        watcher.EquipmentDeleted += Watcher_EquipmentDeleted;
-        watcher.GauntletChanged += Watcher_GauntletChanged;
+        //watcher = new SaveWatcher(saveFilePath);
+        //watcher.EquipmentDeleted += Watcher_EquipmentDeleted;
+        //watcher.GauntletChanged += Watcher_GauntletChanged;
 
         // Attach to process memory
         procMem = ProcessMemory.Attach(proc.Id);
@@ -68,22 +79,82 @@ class Program
         // Get module base address
         moduleBase = procMem.GetModuleBaseAddress(MODULE_NAME);
 
-        // Add memory watcher to check for changes
-        MemoryWatcher<bool> abyssWatcher = new("IsInAbyss", procMem, new PlayerOffsets(moduleBase).IsInAbyss);
-        abyssWatcher.ValueChanged += IsInAbyss_ValueChanged;
+        // Watch rank (level)
+        MemoryWatcher<int> rankWatcher = new("Points", procMem, new HalfSwordGameMode_Offsets(moduleBase).CurrentPoints);
+        rankWatcher.ValueChanged += PointsChanged;
+
+        // Watch prestige
+        MemoryWatcher<int> prestigeWatcher = new("Rank", procMem, new HalfSwordGameMode_Offsets(moduleBase).AvailableRank);
+        prestigeWatcher.ValueChanged += RankChanged;
 
         // Add to update list
-        updatables.Add(abyssWatcher);
+        updatables.AddRange(rankWatcher, prestigeWatcher);
 
         player = new Player(procMem, moduleBase);
+        gameState = new GameState(procMem, moduleBase);
     }
- 
+
+    private void RankChanged(object? sender, MemoryChangedEventArgs<int> e)
+    {
+        // Player ranked up, save
+        if (e.NewValue > e.OldValue && !player.IsInAbyss())
+        {
+            Console.WriteLine("Rank up: Backing up save data {0}", DateTime.Now.ToString());
+            
+            try { SaveData.Instance.BackupSaveData(); }
+            catch (IOException ex) { Console.WriteLine("ERROR: Failed to backup save data. {0}", ex.Message); }
+
+            rank = e.NewValue;
+        }
+        if (e.NewValue < e.OldValue)
+        {
+            Console.WriteLine("Rank lost, loading backup... {0}", DateTime.Now.ToString());
+
+            player.Rank = rank;
+            player.Points = points;
+            try { SaveData.Instance.LoadSaveProgress(2); }
+            catch (IOException ex) { Console.WriteLine("ERROR: Failed to load backup save. {0}", ex.Message); }
+        }
+    }
+
+    private void PointsChanged(object? sender, MemoryChangedEventArgs<int> e)
+    {
+        if (!player.GauntledModeEnabled || player.IsInAbyss())
+        {
+            Console.WriteLine("Gauntled mode disabled, skipping PointsChanged event");
+            return;
+        }
+
+        int pointDiff = (e.OldValue - e.NewValue);
+        // Player won and points up
+        if (e.NewValue > e.OldValue)
+        {
+            Console.WriteLine("Level up {0} -> {1}: Backing up save data {2}", e.OldValue, e.NewValue, DateTime.Now.ToString());
+            try { SaveData.Instance.BackupSaveData(); }
+            catch (IOException ex) { Console.WriteLine("ERROR: Failed to backup save data. {0}", ex.Message); }
+        }
+        // Player lost 1 point, player gave up
+        else if ((pointDiff >= 1 && pointDiff <= 2) && !player.IsDead) // avoid increasing points when player ranks up.
+        {
+            Console.WriteLine("Player gave up / lost, fixing points: {0}", DateTime.Now.ToString());
+            player.Points = e.OldValue;
+            e.ValueModified = true; // Mark value as modified so event doesnt trigger again for this change
+        }
+    }
+
     public void Run()
     {
-        prevRank = player.Rank;
-
-        // Set initial save
-        SaveData.Instance.BackupSaveData();
+        try
+        {
+            SaveData.Instance.BackupSaveData();
+            rank = player.Rank;
+            points = player.Points;
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine("Failed to save data, {0}", ex.ToString());
+            return;
+        }
 
         Console.WriteLine("Press q to quit");
         ConsoleKey keyPressed = ConsoleKey.None;
@@ -96,58 +167,13 @@ class Program
             if (Console.KeyAvailable)
                 keyPressed = Console.ReadKey().Key;
 
-            Task.Delay(100).Wait();
+            Task.Delay(1).Wait();
         } while (keyPressed != ConsoleKey.Q);
     }
+
     private void GameUpdate()
     {
         updatables.ForEach(u => u.Update());
-       
-        //
-    }
-
-    private void IsInAbyss_ValueChanged(object? sender, MemoryChangedEventArgs<bool> e)
-    {
-        if (e.NewValue)
-        {
-            Console.WriteLine("Player is in abyss");
-            // Replace the wiped saves with the backups
-            try
-            {
-                watcher.EventsEnabled = false;
-                SaveData.Instance.LoadSaveProgress(2);
-                watcher.EventsEnabled = true;
-            }
-            catch (IOException ex)
-            {
-                Console.WriteLine(ex.Message);
-            }
-        }
-        else Console.WriteLine( "Player is no longer in abyss");
-    }
-
-  
-    private void Watcher_GauntletChanged(object? sender, EventArgs e)
-    {
-        Console.WriteLine("Gauntlet progress changed {0}", DateTime.UtcNow.ToString());
-
-        if (player.IsInAbyss) return; // Never save equipment and progress when in abyss
-
-        // Sla laatste 5 saves op. Kijk vervolgens bij het vervangen naar de save die tenminste 10 secoonden geleden verwijderd is zodat we geen lege save pakken
-
-        int rank = player.Rank;
-        if (rank <= prevRank)
-        {
-            Console.WriteLine("Player gave up or died, do not use save");
-        }
-        else
-        {
-            Console.WriteLine("Player won, save data");
-            SaveData.Instance.BackupSaveData();
-        }
-
-        prevRank = rank;
-        Console.WriteLine("Player rank = {0}", player.Rank);
     }
 
     /// <summary>
@@ -156,14 +182,14 @@ class Program
     /// </summary>
     /// <param name="sender"></param>
     /// <param name="e">Empty args</param>
-    private void Watcher_EquipmentDeleted(object? sender, EventArgs e)
-    {
-        //await Task.Delay(1000); // Delay to ensure the game has finished writing
-        Console.WriteLine("copying now! {0}", DateTime.UtcNow.ToString());
-        // Replace the wiped saves with the backups
+    //private void Watcher_EquipmentDeleted(object? sender, EventArgs e)
+    //{
+    //    //await Task.Delay(1000); // Delay to ensure the game has finished writing
+    //    Console.WriteLine("copying now! {0}", DateTime.UtcNow.ToString());
+    //    // Replace the wiped saves with the backups
 
-        watcher.EventsEnabled = false;
-        SaveData.Instance.LoadSaveProgress(2);
-        watcher.EventsEnabled = true;
-    }
+    //    watcher.EventsEnabled = false;
+    //    SaveData.Instance.LoadSaveProgress(2);
+    //    watcher.EventsEnabled = true;
+    //}
 }   

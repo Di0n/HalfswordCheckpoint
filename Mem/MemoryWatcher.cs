@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using static HSCheckpoint.Mem.ProcessMemory;
 
 namespace HSCheckpoint.Mem
 {
@@ -31,9 +32,12 @@ namespace HSCheckpoint.Mem
 
             IntPtr baseAddress = pointerPath.BaseAddress;
             int[] offsets = pointerPath.Offsets;
+
             IntPtr address = (offsets.Length == 0) ? baseAddress : procMem.FindDynamicAddress(baseAddress, offsets);
 
-            T currentValue = procMem.Read<T>(address);
+            // If not able to read memory return
+            if (address == IntPtr.Zero || procMem.TryRead(address, out T currentValue) != MemoryResult.NO_ERROR)
+                return;
 
             if (!initialized)
             {
@@ -44,8 +48,10 @@ namespace HSCheckpoint.Mem
 
             if (!currentValue.Equals(lastValue))
             {
-                ValueChanged?.Invoke(this, new MemoryChangedEventArgs<T>(Name, lastValue, currentValue));
-                lastValue = currentValue;
+                var eventArgs = new MemoryChangedEventArgs<T>(Name, lastValue, currentValue);
+                ValueChanged?.Invoke(this, eventArgs);
+                if (eventArgs.ValueModified) initialized = false; // Value has been changed, reset initialization
+                else lastValue = currentValue;
             }
         }
     }
