@@ -5,5 +5,5 @@ Checkpoint saver mod for Halfsword beta
 .NET 9.0
 Halfsword demo 5.4.4.0
 
-## Compile isntructions
+## Compile instructions
 Compile for x64
